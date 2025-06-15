@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+
+# Script to create two CloudWatch alarms for memory usage: warning and critical.
+# Usage: ./create_alarms.sh i-0123456789abcdef0
+
+INSTANCE_ID="$1"
+
+if [ -z "$INSTANCE_ID" ]; then
+  echo "Usage: $0 <instance-id>"
+  exit 1
+fi
+
+# SNS topic
+SNS_TOPIC_NAME="Memory-Utilization-Warning"
+SNS_TOPIC_ARN=$(aws sns list-topics --query "Topics[?contains(TopicArn, '$SNS_TOPIC_NAME')].TopicArn" --output text)
+
+if [ -z "$SNS_TOPIC_ARN" ]; then
+  echo "Error: SNS topic '$SNS_TOPIC_NAME' not found."
+  exit 1
+fi
+
+# Get Instance Name
+INSTANCE_NAME=$(aws ec2 describe-tags \
+  --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=Name" \
+  --query "Tags[0].Value" --output text)
+
+
+# Common alarm properties
+NAMESPACE="CWAgent"
+METRIC_NAME="mem_used_percent"
+STATISTIC="Average"
+PERIOD=300  # 5 minutes in seconds
+EVALUATION_PERIODS=1
+DIMENSIONS="Name=InstanceId,Value=$INSTANCE_ID"
+
+# Create Warning Alarm
+echo "Creating warning alarm..."
+aws cloudwatch put-metric-alarm \
+  --alarm-name "Memory_usage_${INSTANCE_NAME}_Warning" \
+  --alarm-description "Triggers a warning when memory usage exceeds 80% on the instance, indicating a potential resource bottleneck that may need investigation." \
+  --metric-name "$METRIC_NAME" \
+  --namespace "$NAMESPACE" \
+  --statistic "$STATISTIC" \
+  --period "$PERIOD" \
+  --evaluation-periods "$EVALUATION_PERIODS" \
+  --threshold 80 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --dimensions $DIMENSIONS \
+  --alarm-actions "$SNS_TOPIC_ARN" \
+  --unit Percent
+
+# Create Critical Alarm
+echo "Creating critical alarm..."
+aws cloudwatch put-metric-alarm \
+  --alarm-name "Memory_usage_${INSTANCE_NAME}_Critical" \
+  --alarm-description "Triggers a critical alert when memory usage exceeds 90%, indicating a high risk of application or system instability due to insufficient memory." \
+  --metric-name "$METRIC_NAME" \
+  --namespace "$NAMESPACE" \
+  --statistic "$STATISTIC" \
+  --period "$PERIOD" \
+  --evaluation-periods "$EVALUATION_PERIODS" \
+  --threshold 90 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --dimensions $DIMENSIONS \
+  --alarm-actions "$SNS_TOPIC_ARN" \
+  --unit Percent
+
+echo "Alarms created for instance $INSTANCE_NAME."
