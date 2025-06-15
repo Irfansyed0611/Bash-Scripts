@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+# Script to create two CloudWatch alarms for disk usage (root volume) on an EC2 instance.
+# Usage: ./create_disk_alarms.sh i-0123456789abcdef0
+
+INSTANCE_ID="$1"
+
+if [ -z "$INSTANCE_ID" ]; then
+  echo "Usage: $0 <instance-id>"
+  exit 1
+fi
+
+# SNS Topic
+SNS_TOPIC_NAME="Memory-Utilization-Warning"
+SNS_TOPIC_ARN=$(aws sns list-topics --query "Topics[?contains(TopicArn, '$SNS_TOPIC_NAME')].TopicArn" --output text)
+
+if [ -z "$SNS_TOPIC_ARN" ]; then
+  echo "Error: SNS topic '$SNS_TOPIC_NAME' not found."
+  exit 1
+fi
+
+# Get Instance Name from EC2 tags
+INSTANCE_NAME=$(aws ec2 describe-tags \
+  --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=Name" \
+  --query "Tags[0].Value" --output text)
+
+if [ -z "$INSTANCE_NAME" ] || [ "$INSTANCE_NAME" = "None" ]; then
+  INSTANCE_NAME="$INSTANCE_ID"
+fi
+
+# Metric and alarm config
+NAMESPACE="CWAgent"
+METRIC_NAME="disk_used_percent"
+STATISTIC="Average"
+PERIOD=300
+EVALUATION_PERIODS=1
+MOUNT_PATH="/"
+FILESYSTEM="xvda1"  # Adjust this if needed (e.g., nvme0n1p1)
+
+# Dimensions for disk metrics
+DIMENSIONS="[{\"Name\":\"InstanceId\",\"Value\":\"$INSTANCE_ID\"},{\"Name\":\"path\",\"Value\":\"$MOUNT_PATH\"},{\"Name\":\"fstype\",\"Value\":\"ext4\"}]"
+
+# Create Warning Alarm
+echo "Creating warning disk alarm..."
+aws cloudwatch put-metric-alarm \
+  --alarm-name "Disk_usage_${INSTANCE_NAME}_Warning" \
+  --alarm-description "Triggers a warning when disk usage on '/' exceeds 80% on the instance, indicating potential storage capacity issues." \
+  --metric-name "$METRIC_NAME" \
+  --namespace "$NAMESPACE" \
+  --statistic "$STATISTIC" \
+  --period "$PERIOD" \
+  --evaluation-periods "$EVALUATION_PERIODS" \
+  --threshold 80 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --dimensions "$DIMENSIONS" \
+  --alarm-actions "$SNS_TOPIC_ARN" \
+  --unit Percent
+
+# Create Critical Alarm
+echo "Creating critical disk alarm..."
+aws cloudwatch put-metric-alarm \
+  --alarm-name "Disk_usage_${INSTANCE_NAME}_Critical" \
+  --alarm-description "Triggers a critical alert when disk usage on '/' exceeds 90%, indicating a risk of storage exhaustion that could impact application availability." \
+  --metric-name "$METRIC_NAME" \
+  --namespace "$NAMESPACE" \
+  --statistic "$STATISTIC" \
+  --period "$PERIOD" \
+  --evaluation-periods "$EVALUATION_PERIODS" \
+  --threshold 90 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --dimensions "$DIMENSIONS" \
+  --alarm-actions "$SNS_TOPIC_ARN" \
+  --unit Percent
+
+echo "Disk alarms created for instance $INSTANCE_NAME."
+
